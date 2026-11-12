@@ -1,36 +1,72 @@
 // ==UserScript==
-// @name         TVG M/L vs Current Odds % Change
+// @name         TVG M/L vs Current Odds % Change + Trackside Win %
 // @namespace    karim.tvg.odds
-// @version      1.1
-// @description  Shows the % change between morning-line and current odds on TVG race cards, color-coded (shortening = green, drifting = red)
+// @version      2.1
+// @description  On TVG race cards: % change from M/L to current odds, Trackside Win % per horse, Best Non-Maiden / Best Maiden / Hidden Gem tags, and exacta Win % on the Probables table
 // @match        https://www.tvg.com/*
 // @grant        GM_addStyle
+// @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @connect      trackside.yourteamstats.com
 // @run-at       document-idle
 // ==/UserScript==
 
 (function () {
   'use strict';
 
+  const TS_BASE = 'https://trackside.yourteamstats.com/published/';
+  const TS_CHECK_MS = 30 * 60 * 1000;   // how often to check Trackside's small index for a re-publish
+  const TS_CACHE_KEY = 'tsCache.v1';    // saved in Tampermonkey storage, shared by all TVG tabs
+  const TOP_EXACTAS = 8;                // how many exactas to list / highlight
+
   GM_addStyle(`
-    .kb-odds-chg {
-      display: block;
-      margin-top: 3px;
-      padding: 1px 4px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 700;
-      line-height: 1.4;
-      white-space: nowrap;
-    }
+    /* ---------- M/L vs current odds badge ---------- */
+    .kb-odds-chg { display:block; margin-top:3px; padding:1px 4px; border-radius:4px;
+      font-size:11px; font-weight:700; line-height:1.4; white-space:nowrap; }
     /* Odds shortening (negative %) = good, odds drifting (positive %) = bad */
-    .kb-chg-huge   { background:#0b8a2f; color:#fff; }   /* -60% or more */
-    .kb-chg-big    { background:#3fbf5f; color:#fff; }   /* -35% to -59% */
-    .kb-chg-med    { background:#a6e3b5; color:#0a3d18; }/* -15% to -34% */
-    .kb-chg-small  { background:#e6f6ea; color:#1d5c2e; }/* -1% to -14% */
-    .kb-chg-flat   { background:#e4e4e4; color:#444; }   /* 0% */
-    .kb-chg-drift  { background:#fde2c4; color:#8a4b00; }/* +1% to +49% */
-    .kb-chg-crash  { background:#d93636; color:#fff; }   /* +50% or more */
+    .kb-chg-huge  { background:#0b8a2f; color:#fff; }    /* -60% or more */
+    .kb-chg-big   { background:#3fbf5f; color:#fff; }    /* -35% to -59% */
+    .kb-chg-med   { background:#a6e3b5; color:#0a3d18; } /* -15% to -34% */
+    .kb-chg-small { background:#e6f6ea; color:#1d5c2e; } /* -1% to -14% */
+    .kb-chg-flat  { background:#e4e4e4; color:#444; }    /* 0% */
+    .kb-chg-drift { background:#fde2c4; color:#8a4b00; } /* +1% to +49% */
+    .kb-chg-crash { background:#d93636; color:#fff; }    /* +50% or more */
+
+    /* ---------- Trackside Win % and tags next to the horse name ---------- */
+    /* !important because TVG's own CSS strips padding/radius from spans */
+    .kb-ts { display:flex !important; flex-wrap:wrap; gap:4px; width:100%; margin:2px 0 1px 0 !important; }
+    .kb-pill { display:inline-block !important; padding:1px 7px !important; border-radius:10px !important;
+      font-size:11px !important; font-weight:700 !important; line-height:1.5 !important; white-space:nowrap; }
+    .kb-exlist .kb-pill { min-width:44px; text-align:center; }
+    .kb-tag-nm  { background:#1f4fd1; color:#fff; }   /* Best Non-Maiden */
+    .kb-tag-m   { background:#7b2fd1; color:#fff; }   /* Best Maiden */
+    .kb-tag-gem { background:#d1a11f; color:#2b2000; }/* Hidden Gem */
+
+    /* Win % colors (higher = better) */
+    .kb-w5 { background:#0b8a2f; color:#fff; }
+    .kb-w4 { background:#3fbf5f; color:#fff; }
+    .kb-w3 { background:#a6e3b5; color:#0a3d18; }
+    .kb-w2 { background:#f3e7a1; color:#5a4a00; }
+    .kb-w1 { background:#e4e4e4; color:#555; }
+
+    /* ---------- Probables table overlay ---------- */
+    .kb-ex { display:block !important; margin-top:1px !important; padding:0 3px !important; border-radius:3px !important;
+      font-size:10px !important; font-weight:700 !important; line-height:1.4 !important; white-space:nowrap; }
+    .kb-ex-top { outline:2px solid #0b8a2f !important; outline-offset:-2px; border-radius:3px; }
+
+    /* ---------- Top exactas list (when TVG has no Probables table) ---------- */
+    .kb-exlist { margin:8px 0 4px; font-size:12px; }
+    .kb-exlist h4 { margin:0 0 6px; font-size:13px; font-weight:700; }
+    .kb-exlist table { width:100%; border-collapse:collapse; }
+    .kb-exlist td { padding:3px 4px; border-bottom:1px solid #e5e5e5; vertical-align:middle; }
+    .kb-exlist td.kb-combo { font-weight:700; white-space:nowrap; }
+    .kb-exlist .kb-note { margin-top:4px; font-size:10px; color:#777; }
   `);
+
+  /* =====================================================================
+     Shared helpers
+     ===================================================================== */
 
   // Parses TVG odds like "12", "7/2", "11/4", "EVN"/"EVEN" into odds-to-1.
   function parseOdds(txt) {
@@ -44,7 +80,19 @@
     return den ? num / den : null;
   }
 
-  function classFor(pct) {
+  // "St. Armand's Key (IRE)" -> "STARMANDSKEY"
+  const normName = s => (s || '').toUpperCase().replace(/\(.*?\)/g, '').replace(/[^A-Z0-9]/g, '');
+  const normNum = s => (s || '').toUpperCase().replace(/[^0-9A-Z]/g, '');
+  const pctNum = s => { const v = parseFloat((s || '').replace('%', '')); return isNaN(v) ? null : v; };
+
+  function setText(el, text) { if (el.textContent !== text) el.textContent = text; }
+  function setClass(el, cls) { if (el.className !== cls) el.className = cls; }
+
+  /* =====================================================================
+     Feature 1: M/L vs current odds % change
+     ===================================================================== */
+
+  function oddsClass(pct) {
     if (pct <= -60) return 'kb-chg-huge';
     if (pct <= -35) return 'kb-chg-big';
     if (pct <= -15) return 'kb-chg-med';
@@ -54,48 +102,447 @@
     return 'kb-chg-crash';
   }
 
-  function update() {
+  function updateOddsChange() {
     document.querySelectorAll('.race-morning-odds').forEach(mlEl => {
       const cell = mlEl.closest('td') || mlEl.parentElement;
       if (!cell) return;
       const curEl = cell.querySelector('.race-current-odds');
       let badge = cell.querySelector('.kb-odds-chg');
-
       const ml = parseOdds(mlEl.textContent);
       const cur = curEl ? parseOdds(curEl.textContent) : null;
 
-      if (ml == null || cur == null || ml === 0) {
-        if (badge) badge.remove();
-        return;
-      }
+      if (ml == null || cur == null || ml === 0) { if (badge) badge.remove(); return; }
 
       const pct = ((cur - ml) / ml) * 100;
-      const text = (pct > 0 ? '+' : '') + pct.toFixed(0) + '%';
-      const cls = 'kb-odds-chg ' + classFor(pct);
-
-      if (!badge) {
-        badge = document.createElement('span');
-        cell.appendChild(badge);
-      }
-      // Only touch the DOM if something changed (avoids observer loops).
-      if (badge.textContent !== text) badge.textContent = text;
-      if (badge.className !== cls) badge.className = cls;
+      if (!badge) { badge = document.createElement('span'); cell.appendChild(badge); }
+      setText(badge, (pct > 0 ? '+' : '') + pct.toFixed(0) + '%');
+      setClass(badge, 'kb-odds-chg kb-own ' + oddsClass(pct));
       badge.title = `M/L ${mlEl.textContent.trim()} → Current ${curEl.textContent.trim()}`;
     });
   }
 
+  /* =====================================================================
+     Feature 2: Trackside data (download + parse)
+     ===================================================================== */
+
+  let TS = null;          // parsed data: { date, publishedAt, races: [...], tags: Map }
+  let tsLoading = false;
+  let tsLastCheck = 0;
+
+  function gmGet(url) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: 'GET', url, timeout: 30000,
+        onload: r => (r.status >= 200 && r.status < 300) ? resolve(r.responseText) : reject(new Error('HTTP ' + r.status + ' ' + url)),
+        onerror: () => reject(new Error('Network error ' + url)),
+        ontimeout: () => reject(new Error('Timeout ' + url)),
+      });
+    });
+  }
+
+  const todayLocal = () => new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
+
+  // Reads the small index (~30 KB) and returns today's US entry { date, publishedAt },
+  // or the most recent earlier day if today isn't published yet.
+  async function pickDay() {
+    const today = todayLocal();
+    const ix = JSON.parse(await gmGet(TS_BASE + 'index.json'));
+    const us = (ix.days || []).filter(d => d.country === 'us' && d.date <= today)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const day = us.find(d => d.date === today) || us[us.length - 1];
+    return day ? { date: day.date, publishedAt: day.publishedAt || '' } : { date: today, publishedAt: '' };
+  }
+
+  // ---- Saved cache (Tampermonkey storage): only the parsed races + tags (~tens of KB) ----
+  function readCache() {
+    try {
+      const c = GM_getValue(TS_CACHE_KEY, null);
+      if (!c || !c.races) return null;
+      return { date: c.date, publishedAt: c.publishedAt, checkedAt: c.checkedAt || 0,
+               races: c.races, tags: new Map(c.tags || []) };
+    } catch (e) { return null; }
+  }
+  function writeCache(ts, checkedAt) {
+    try {
+      GM_setValue(TS_CACHE_KEY, { date: ts.date, publishedAt: ts.publishedAt, checkedAt,
+                                  races: ts.races, tags: [...ts.tags] });
+    } catch (e) { console.warn('[KB TVG] cache write failed', e); }
+  }
+
+  // Reads a Trackside table into objects keyed by its header names.
+  function tableRecords(table) {
+    const rows = [...table.rows];
+    const hIdx = rows.findIndex(r => [...r.cells].some(c => c.textContent.trim() === 'Track'));
+    if (hIdx < 0) return [];
+    const heads = [...rows[hIdx].cells].map(c => c.textContent.trim());
+    return rows.slice(hIdx + 1).map(r => {
+      const o = {};
+      [...r.cells].forEach((c, i) => { o[heads[i]] = c.textContent.trim(); });
+      return o;
+    }).filter(o => o.Track && o.Name);
+  }
+
+  // "4 GRAY DAY" -> { num:"4", name:"GRAY DAY" }
+  function splitNumName(s) {
+    const m = (s || '').trim().match(/^(\d+[A-Z]?)\s+(.+)$/i);
+    return m ? { num: m[1], name: m[2] } : { num: '', name: (s || '').trim() };
+  }
+
+  function parseTrackside(json) {
+    const page = key => {
+      const p = (json.pages || []).find(x => x.key === key);
+      return p ? new DOMParser().parseFromString(p.html, 'text/html') : null;
+    };
+
+    // ---- Race cards: header table "TRACK 2026-11-12 Race: N at ..." then a runners table ----
+    const races = [];
+    const card = page('card');
+    if (card) {
+      const tables = [...card.querySelectorAll('table')];
+      for (let i = 0; i < tables.length - 1; i++) {
+        const head = tables[i].textContent.replace(/\s+/g, ' ').trim();
+        const m = head.match(/^(.*?)\s+\d{4}-\d{2}-\d{2}\s+Race:\s*(\d+)/);
+        if (!m) continue;
+        const rows = [...tables[i + 1].rows];
+        if (!rows.length) continue;
+        const heads = [...rows[0].cells].map(c => c.textContent.trim());
+        const nameIdx = heads.indexOf('Name');
+        const winIdx = heads.indexOf('WIN %');
+        if (nameIdx < 0 || winIdx < 0) continue;
+        const runners = rows.slice(1).map(r => {
+          const nn = splitNumName(r.cells[nameIdx] && r.cells[nameIdx].textContent);
+          return { num: nn.num, name: nn.name, key: normName(nn.name), win: pctNum(r.cells[winIdx] && r.cells[winIdx].textContent) };
+        }).filter(r => r.key && r.win != null);
+        races.push({ track: m[1].trim(), race: m[2], runners });
+        i++; // skip the runners table
+      }
+    }
+
+    // ---- Tags: Best Non-Maidens / Best Maidens (ranked table only) / Hidden Gems ----
+    const tags = new Map(); // "TRACK|RACE|NAMEKEY" -> [ {cls, text, title} ]
+    const addTag = (rec, tag) => {
+      const nn = splitNumName(rec.Name);
+      const k = `${rec.Track.toUpperCase()}|${rec.Race}|${normName(nn.name)}`;
+      if (!tags.has(k)) tags.set(k, []);
+      tags.get(k).push(tag);
+    };
+    const ranked = (key, cls, label) => {
+      const doc = page(key);
+      if (!doc) return;
+      const t = doc.querySelector('table'); // first table = ranked list ("Not ranked" is the second)
+      if (!t) return;
+      tableRecords(t).forEach(rec => addTag(rec, {
+        cls, text: `${label}${rec.Rank ? ' #' + rec.Rank : ''}`,
+        title: `${label} rank ${rec.Rank || '-'} · Blend ${rec['Blend %'] || '-'} · ${rec.Note || ''}`.trim(),
+      }));
+    };
+    ranked('bestNonMaidens', 'kb-tag-nm', 'Best Non-Maiden');
+    ranked('bestMaidens', 'kb-tag-m', 'Best Maiden');
+    const gems = page('hiddenGems');
+    if (gems) gems.querySelectorAll('table').forEach(t => tableRecords(t).forEach(rec =>
+      addTag(rec, { cls: 'kb-tag-gem', text: 'Hidden Gem', title: 'Trackside Hidden Gem' })));
+
+    return { date: json.date, races, tags };
+  }
+
+  // 1. Use the saved cache straight away (no network) so badges appear instantly.
+  // 2. At most every 30 minutes (shared across tabs), fetch only the small index.json.
+  // 3. Download the big day file (~760 KB) only if the day or its publishedAt changed.
+  async function loadTrackside() {
+    if (tsLoading) return;
+    // Checked (or failed) within the last 30 min? Do nothing. This runs on every page update.
+    const fresh = () => Date.now() - tsLastCheck < TS_CHECK_MS;
+    if (fresh()) return;
+
+    // Load (or re-read) the saved cache; another tab may have refreshed it.
+    const saved = readCache();
+    if (saved) {
+      if (!TS || TS.date !== saved.date || TS.publishedAt !== saved.publishedAt) { TS = saved; schedule(); }
+      tsLastCheck = Math.max(tsLastCheck, saved.checkedAt);
+      if (fresh()) return;
+    }
+
+    tsLoading = true;
+    try {
+      const day = await pickDay();
+      const now = Date.now();
+      const cached = saved && saved.date === day.date && saved.publishedAt === day.publishedAt ? saved : null;
+
+      if (cached) {
+        TS = TS && TS.publishedAt === cached.publishedAt ? TS : cached;
+        writeCache(TS, now); // just refresh the "checked" time
+        console.info(`[KB TVG] Trackside ${day.date} unchanged (published ${day.publishedAt}) – using cache`);
+      } else {
+        const json = JSON.parse(await gmGet(`${TS_BASE}us-${day.date}.json`));
+        TS = parseTrackside(json);
+        TS.publishedAt = json.publishedAt || day.publishedAt;
+        writeCache(TS, now);
+        console.info(`[KB TVG] Trackside ${TS.date} downloaded: ${TS.races.length} races, ${TS.tags.size} tagged horses`);
+      }
+      tsLastCheck = now;
+      schedule();
+    } catch (e) {
+      console.warn('[KB TVG] Trackside check failed – keeping cached data', e);
+      tsLastCheck = Date.now(); // don't hammer the site; retry after the check interval
+    } finally {
+      tsLoading = false;
+    }
+  }
+
+  /* =====================================================================
+     Feature 3: Win % + tags on the TVG runners
+     ===================================================================== */
+
+  function winClass(p) {
+    if (p >= 40) return 'kb-w5';
+    if (p >= 25) return 'kb-w4';
+    if (p >= 15) return 'kb-w3';
+    if (p >= 8)  return 'kb-w2';
+    return 'kb-w1';
+  }
+
+  function exClass(p) {
+    if (p >= 15) return 'kb-w5';
+    if (p >= 8)  return 'kb-w4';
+    if (p >= 4)  return 'kb-w3';
+    if (p >= 2)  return 'kb-w2';
+    return 'kb-w1';
+  }
+
+  // Reads the runners currently shown on the TVG race card.
+  function tvgRunners() {
+    return [...document.querySelectorAll('tr.program-page-runner')].map(row => {
+      const numEl = row.querySelector('.horse-number-label');
+      const nameEl = row.querySelector('.horse-info-row .horse-info-cell strong.h5') ||
+                     row.querySelector('.horse-info-cell strong');
+      if (!numEl || !nameEl) return null;
+      return {
+        row, nameEl,
+        num: numEl.textContent.trim(),
+        name: nameEl.textContent.trim(),
+        key: normName(nameEl.textContent),
+        scratched: /SCRATCHED/i.test(row.textContent),
+      };
+    }).filter(Boolean);
+  }
+
+  // Finds the Trackside race whose horse names best match the TVG card.
+  function matchRace(runners) {
+    if (!TS || !runners.length) return null;
+    const keys = new Set(runners.map(r => r.key));
+    let best = null, bestHits = 0;
+    for (const race of TS.races) {
+      let hits = 0;
+      for (const r of race.runners) if (keys.has(r.key)) hits++;
+      if (hits > bestHits) { best = race; bestHits = hits; }
+    }
+    const needed = Math.min(2, runners.length);
+    return bestHits >= needed ? best : null;
+  }
+
+  function updateRunners(runners, race) {
+    const byKey = new Map(race ? race.runners.map(r => [r.key, r]) : []);
+    const byNum = new Map(race ? race.runners.map(r => [normNum(r.num), r]) : []);
+
+    runners.forEach(r => {
+      const cell = r.nameEl.parentElement;
+      let box = cell.querySelector('.kb-ts');
+      const ts = race ? (byKey.get(r.key) || byNum.get(normNum(r.num))) : null;
+
+      if (!ts) { if (box) box.remove(); r.ts = null; return; }
+      r.ts = ts;
+
+      if (!box) { box = document.createElement('span'); box.className = 'kb-ts kb-own'; r.nameEl.after(box); }
+
+      const pills = [{ cls: 'kb-pill ' + winClass(ts.win), text: `Win ${ts.win.toFixed(1)}%`, title: 'Trackside WIN %' }];
+      const tags = TS.tags.get(`${race.track.toUpperCase()}|${race.race}|${ts.key}`) || [];
+      tags.forEach(t => pills.push({ cls: 'kb-pill ' + t.cls, text: t.text, title: t.title }));
+
+      const sig = pills.map(p => p.cls + p.text).join('|');
+      if (box.dataset.sig === sig) return; // nothing changed
+      box.dataset.sig = sig;
+      box.textContent = '';
+      pills.forEach(p => {
+        const s = document.createElement('span');
+        s.className = p.cls; s.textContent = p.text; s.title = p.title;
+        box.appendChild(s);
+      });
+    });
+  }
+
+  /* =====================================================================
+     Feature 4: Exacta Win % (Harville model from the Trackside WIN %)
+     ===================================================================== */
+
+  // Win probabilities (0-1) for non-scratched horses, re-normalised to sum to 1.
+  function winProbs(runners) {
+    const live = runners.filter(r => r.ts && !r.scratched);
+    const total = live.reduce((s, r) => s + r.ts.win, 0);
+    const p = new Map();
+    if (total > 0) live.forEach(r => p.set(normNum(r.num), r.ts.win / total));
+    return p;
+  }
+
+  // P(a wins, b second) = pa * pb / (1 - pa)
+  const exactaP = (P, a, b) => {
+    const pa = P.get(a), pb = P.get(b);
+    if (pa == null || pb == null || a === b || pa >= 1) return null;
+    return pa * pb / (1 - pa);
+  };
+
+  function allExactas(P, runners) {
+    const nums = [...P.keys()];
+    const nameOf = new Map(runners.map(r => [normNum(r.num), r.name]));
+    const list = [];
+    nums.forEach(a => nums.forEach(b => {
+      const p = exactaP(P, a, b);
+      if (p != null) list.push({ a, b, p: p * 100, names: `${nameOf.get(a) || ''} / ${nameOf.get(b) || ''}` });
+    }));
+    return list.sort((x, y) => y.p - x.p);
+  }
+
+  function probablesContainer() {
+    const h = [...document.querySelectorAll('.pcontainer h2')].find(e => e.textContent.trim() === 'Probables');
+    return h ? h.parentElement : null;
+  }
+
+  function updateProbables(runners, race) {
+    const pc = probablesContainer();
+    if (!pc) return;
+    const table = pc.querySelector('.probables-table');
+    let list = pc.querySelector('.kb-exlist');
+
+    const P = race ? winProbs(runners) : new Map();
+    if (P.size < 2) {
+      if (list) list.remove();
+      pc.querySelectorAll('.kb-ex').forEach(e => e.remove());
+      pc.querySelectorAll('.kb-ex-top').forEach(e => e.classList.remove('kb-ex-top'));
+      return;
+    }
+    const ranked = allExactas(P, runners);
+
+    if (table) {
+      if (list) list.remove();
+      annotateProbablesTable(pc, table, P, ranked);
+    } else {
+      renderExactaList(pc, list, ranked);
+    }
+  }
+
+  // TVG grid: column headers = horse finishing 1st, left sticky column = horse finishing 2nd.
+  function annotateProbablesTable(pc, table, P, ranked) {
+    const sel = pc.querySelector('select.cb-bettype');
+    const betType = sel && sel.selectedOptions[0] ? sel.selectedOptions[0].textContent.trim().toLowerCase() : 'exacta';
+    const quinella = betType.includes('quinella');
+
+    const rows = [...table.querySelectorAll('.probables-row')];
+    if (rows.length < 2) return;
+    const firstNums = [...rows[0].children].map(c => normNum(c.textContent));
+    const secondNums = [...pc.querySelectorAll('.sticky-col .sticky-cell:not(.diagonal-cell)')].map(c => normNum(c.textContent));
+
+    // Rank of each combo so the top N can be outlined.
+    const rankOf = new Map();
+    if (quinella) {
+      const seen = new Set(), q = [];
+      ranked.forEach(e => {
+        const k = [e.a, e.b].sort().join('-');
+        if (seen.has(k)) return; seen.add(k);
+        q.push({ k, p: (exactaP(P, e.a, e.b) + exactaP(P, e.b, e.a)) * 100 });
+      });
+      q.sort((x, y) => y.p - x.p).slice(0, TOP_EXACTAS).forEach((e, i) => rankOf.set(e.k, i + 1));
+    } else {
+      ranked.slice(0, TOP_EXACTAS).forEach((e, i) => rankOf.set(`${e.a}-${e.b}`, i + 1));
+    }
+
+    rows.slice(1).forEach((row, ri) => {
+      const second = secondNums[ri];
+      [...row.children].forEach((cell, ci) => {
+        const first = firstNums[ci];
+        let p = exactaP(P, first, second);
+        if (p != null && quinella) p += exactaP(P, second, first);
+        let tag = cell.querySelector('.kb-ex');
+        if (p == null) { if (tag) tag.remove(); cell.classList.remove('kb-ex-top'); return; }
+        p *= 100;
+        const rank = rankOf.get(quinella ? [first, second].sort().join('-') : `${first}-${second}`);
+        if (!tag) { tag = document.createElement('span'); cell.appendChild(tag); }
+        setClass(tag, 'kb-ex kb-own ' + exClass(p));
+        const text = (rank ? `#${rank} ` : '') + p.toFixed(1) + '%';
+        setText(tag, text);
+        tag.title = `${quinella ? 'Quinella' : 'Exacta'} ${first}-${second}: ${p.toFixed(1)}% (Trackside Win %)`;
+        cell.classList.toggle('kb-ex-top', !!rank);
+      });
+    });
+  }
+
+  function renderExactaList(pc, list, ranked) {
+    const body = pc.querySelector('.panel-body') || pc;
+    if (!list) {
+      list = document.createElement('div');
+      list.className = 'kb-exlist kb-own';
+      body.appendChild(list);
+    }
+    const top = ranked.slice(0, TOP_EXACTAS);
+    const sig = top.map(e => `${e.a}-${e.b}:${e.p.toFixed(1)}`).join('|');
+    if (list.dataset.sig === sig) return;
+    list.dataset.sig = sig;
+
+    list.textContent = '';
+    const h = document.createElement('h4');
+    h.textContent = 'Top exactas by Trackside Win %';
+    list.appendChild(h);
+    const t = document.createElement('table');
+    top.forEach((e, i) => {
+      const tr = t.insertRow();
+      tr.insertCell().textContent = `#${i + 1}`;
+      const combo = tr.insertCell(); combo.className = 'kb-combo'; combo.textContent = `${e.a} - ${e.b}`;
+      tr.insertCell().textContent = e.names;
+      const pc2 = tr.insertCell();
+      const pill = document.createElement('span');
+      pill.className = 'kb-pill ' + exClass(e.p);
+      pill.textContent = e.p.toFixed(1) + '%';
+      pc2.appendChild(pill);
+    });
+    list.appendChild(t);
+    const note = document.createElement('div');
+    note.className = 'kb-note';
+    note.textContent = 'Chance the first horse wins and the second runs 2nd, from Trackside WIN % (scratches removed).';
+    list.appendChild(note);
+  }
+
+  /* =====================================================================
+     Main loop
+     ===================================================================== */
+
+  function update() {
+    updateOddsChange();
+    const runners = tvgRunners();
+    if (!runners.length) return;
+    loadTrackside();
+    const race = matchRace(runners);
+    updateRunners(runners, race);
+    updateProbables(runners, race);
+  }
+
   // TVG is a single-page app and odds refresh live, so re-run on changes (throttled).
   let pending = false;
-  const schedule = () => {
+  function schedule() {
     if (pending) return;
     pending = true;
     setTimeout(() => { pending = false; update(); }, 300);
-  };
+  }
 
+  const ours = n => n.nodeType === 1 && (n.classList.contains('kb-own') || n.closest('.kb-own'));
   new MutationObserver(muts => {
-    // Ignore mutations caused only by our own badges.
-    if (muts.every(m => m.target.classList && m.target.classList.contains('kb-odds-chg'))) return;
-    schedule();
+    const external = muts.some(m => {
+      const target = m.target.nodeType === 1 ? m.target : m.target.parentElement;
+      if (target && target.closest('.kb-own')) return false;
+      if (m.type === 'childList') {
+        const nodes = [...m.addedNodes, ...m.removedNodes];
+        if (nodes.length && nodes.every(ours)) return false;
+      }
+      return true;
+    });
+    if (external) schedule();
   }).observe(document.body, { childList: true, subtree: true, characterData: true });
 
   update();
