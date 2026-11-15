@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TVG M/L vs Current Odds % Change + Trackside Win %
 // @namespace    karim.tvg.odds
-// @version      2.11
+// @version      2.17
 // @description  On TVG race cards: % change from M/L to current odds, Trackside Win % and fair odds per horse, Best Non-Maiden / Best Maiden / UK Top Pick / Hidden Gem tags (US + UK), exacta Win % on the Probables table, and money velocity (pools + probables)
 // @match        https://www.tvg.com/*
 // @grant        GM_addStyle
@@ -79,8 +79,20 @@
     .kb-pp { display:block !important; font-size:10px !important; font-weight:700 !important; color:#1c5fa8 !important;
       line-height:1.3 !important; white-space:nowrap; }
     .kb-pp-note { font-size:10px; color:#777; margin:-4px 0 4px; }
-    .kb-pp.kb-pp-better { display:inline-block !important; background:#2b8a3e; color:#fff !important;
-      border-radius:8px !important; padding:0 6px !important; margin-top:1px; }
+    .kb-pp-note > div + div { margin-top:2px; }
+    /* ---------- Floating Trackside button ---------- */
+    #kb-ts-btn { position:fixed; z-index:2147483000; left:0; top:0; padding:6px 14px 5px; border-radius:16px; text-align:center;
+      background:#0b8a2f; color:#fff !important; font:700 13px/1.2 Arial, sans-serif; text-decoration:none !important;
+      box-shadow:0 2px 8px rgba(0,0,0,.35); cursor:grab; user-select:none; touch-action:none; white-space:nowrap; }
+    #kb-ts-btn:hover { background:#0a7a29; }
+    #kb-ts-btn .kb-ts-btn-label { display:block; }
+    #kb-ts-btn .kb-ts-btn-hint { display:block; margin-top:2px; font:400 10px/1.1 Arial, sans-serif; opacity:.85; }
+    #kb-ts-btn.kb-dragging { cursor:grabbing; opacity:.85; box-shadow:0 4px 14px rgba(0,0,0,.45); }
+    .kb-pp-legend { display:inline-block !important; background:#2b8a3e; color:#fff !important; font-weight:700;
+      border-radius:7px !important; padding:0 5px !important; line-height:1.25 !important; }
+    /* display:table = own line under the amount, but only as wide as the text (centered) */
+    .kb-pp.kb-pp-better { display:table !important; margin:0 auto !important; background:#2b8a3e; color:#fff !important;
+      border-radius:7px !important; padding:0 5px !important; line-height:1.25 !important; }
     .kb-pv-hot { box-shadow: inset 0 0 0 2px #0b8a2f; }
   `);
 
@@ -891,6 +903,9 @@
      ===================================================================== */
 
   const WPS_TAKEOUT = 0.17; // typical US win/place/show takeout (varies by state/track)
+  // A safer bet (Place vs Win, Show vs Place/Win) gets a green pill when its $2 payout is
+  // at least this share of the riskier bet's payout: nearly the same money for less risk.
+  const PP_CLOSE = 0.70;
 
   function payout2(profitPerDollar) {
     const p = Math.floor(Math.max(0, profitPerDollar) * 100 + 1e-9) / 100; // round down to the cent per $1
@@ -942,11 +957,21 @@
     const totals = poolTotals(pc, pools);
     const est = estimatePayouts(pools, totals);
 
-    // One-line legend under the "Pools" title.
-    if (!pc.querySelector('.kb-pp-note')) {
-      const note = document.createElement('div');
+    // Legend under the "Pools" title (rebuilt if an older version of it is on the page).
+    let note = pc.querySelector('.kb-pp-note');
+    if (!note || note.dataset.v !== '2') {
+      if (note) note.remove();
+      note = document.createElement('div');
       note.className = 'kb-pp-note kb-own';
-      note.textContent = `Blue = est. odds-to-1 from the pools (Place/Show = approx. low end; ${Math.round(WPS_TAKEOUT * 100)}% takeout assumed)`;
+      note.dataset.v = '2';
+      const l1 = document.createElement('div');
+      l1.textContent = `Blue = est. odds-to-1 from the pools (Place/Show = approx. low end; ${Math.round(WPS_TAKEOUT * 100)}% takeout assumed)`;
+      const l2 = document.createElement('div');
+      const pill = document.createElement('span');
+      pill.className = 'kb-pp-legend';
+      pill.textContent = 'Green';
+      l2.append(pill, ` = payout nearly the same (${Math.round(PP_CLOSE * 100)}%+) as the riskier bet above it, for less risk`);
+      note.append(l1, l2);
       const h2 = pc.querySelector('h2');
       if (h2) h2.after(note);
     }
@@ -960,9 +985,12 @@
         if (!e) { if (tag) tag.remove(); return; }
         if (!tag) { tag = document.createElement('span'); c.insertBefore(tag, c.querySelector('.kb-own')); }
         const odds = (e.min - 2) / 2;               // $2 payout -> odds-to-1
-        // Place/Show paying better odds than Win (even at its low end) -> green pill.
-        const w = est.win[num];
-        const better = p !== 'win' && w && odds > (w.min - 2) / 2;
+        // Safer bet paying close to (or more than) a riskier bet on the same horse -> green pill.
+        // Compared on the $2 payouts (low end for Place/Show).
+        const riskier = p === 'place' ? ['win'] : p === 'show' ? ['place', 'win'] : [];
+        const vs = riskier.map(q => ({ q, e: est[q][num] })).filter(x => x.e)
+          .find(x => e.min >= PP_CLOSE * x.e.min);
+        const better = !!vs;
         setClass(tag, 'kb-pp kb-own' + (better ? ' kb-pp-better' : ''));
         setText(tag, fmtOddsTo1(odds));
         tag.title = p === 'win'
@@ -971,9 +999,100 @@
           : `Est. ${p[0].toUpperCase() + p.slice(1)} odds ${fmtOddsTo1((e.min - 2) / 2)} to ${fmtOddsTo1((e.max - 2) / 2)} ` +
             `($2 pays $${e.min.toFixed(2)}–$${e.max.toFixed(2)}), depending on which ` +
             `other horse${p === 'show' ? 's finish' : ' finishes'} in the money (lowest = the most-backed horses)` +
-            (better ? `. Better than the Win odds (${fmtOddsTo1((w.min - 2) / 2)})!` : '');
+            (better ? `. Green: pays ${Math.round(e.min / vs.e.min * 100)}% of the ${vs.q[0].toUpperCase() + vs.q.slice(1)} ` +
+                      `payout ($${vs.e.min.toFixed(2)}, ${fmtOddsTo1((vs.e.min - 2) / 2)}) for less risk` : '');
       });
     });
+  }
+
+  /* =====================================================================
+     Feature 7: Floating "Trackside" button (drag anywhere; click opens Trackside)
+     ===================================================================== */
+
+  const TS_SITE = 'https://trackside.yourteamstats.com';
+  const BTN_POS_KEY = 'tsButtonPos.v2'; // saved {left, top} in px
+
+  function initTracksideButton() {
+    if (document.getElementById('kb-ts-btn')) return;
+    const btn = document.createElement('a');
+    btn.id = 'kb-ts-btn';
+    btn.className = 'kb-own';
+    btn.href = TS_SITE;
+    btn.target = '_blank';
+    btn.rel = 'noopener';
+    const label = document.createElement('span');
+    label.className = 'kb-ts-btn-label';
+    label.textContent = '📊 Trackside';
+    const hint = document.createElement('span');
+    hint.className = 'kb-ts-btn-hint';
+    hint.textContent = 'click · drag to move';
+    btn.append(label, hint);
+    btn.title = 'Open Trackside Handicapper in a new tab (drag to move)';
+    document.body.appendChild(btn);
+
+    // Keep the button fully on screen (clientWidth/Height exclude the scrollbars).
+    const viewW = () => document.documentElement.clientWidth || window.innerWidth;
+    const viewH = () => document.documentElement.clientHeight || window.innerHeight;
+    const clamp = (left, top) => {
+      const w = btn.offsetWidth, h = btn.offsetHeight;
+      return {
+        left: Math.min(Math.max(0, left), viewW() - w),
+        top: Math.min(Math.max(0, top), viewH() - h),
+      };
+    };
+    const place = (pos) => {
+      const p = clamp(pos.left, pos.top);
+      btn.style.left = p.left + 'px';
+      btn.style.top = p.top + 'px';
+      return p;
+    };
+
+    // Default: bottom of the dark margin just right of TVG's white content area
+    // (.appcontent); if there's no room for it there, the bottom-right corner.
+    const defaultPos = () => {
+      const w = btn.offsetWidth, h = btn.offsetHeight;
+      const top = viewH() - h - 20;
+      const app = document.querySelector('.appcontent');
+      const right = app ? app.getBoundingClientRect().right : 0;
+      if (app && viewW() - right >= w + 24) return { left: right + 16, top };
+      return { left: viewW() - w - 20, top };
+    };
+    let saved = null;
+    try { saved = GM_getValue(BTN_POS_KEY, null); } catch (e) {}
+    let pos = place(saved || defaultPos());
+    // TVG's layout may finish loading after us: re-place the default a few times.
+    if (!saved) [500, 1500, 4000].forEach(ms => setTimeout(() => { if (!saved) pos = place(defaultPos()); }, ms));
+
+    // Drag with mouse or touch. A press that moves less than 5px is treated as a click.
+    let start = null, dragged = false;
+    btn.addEventListener('pointerdown', e => {
+      if (e.button !== 0) return;
+      start = { x: e.clientX, y: e.clientY, left: pos.left, top: pos.top };
+      dragged = false;
+      btn.setPointerCapture(e.pointerId);
+    });
+    btn.addEventListener('pointermove', e => {
+      if (!start) return;
+      const dx = e.clientX - start.x, dy = e.clientY - start.y;
+      if (!dragged && Math.hypot(dx, dy) < 5) return;
+      dragged = true;
+      btn.classList.add('kb-dragging');
+      pos = place({ left: start.left + dx, top: start.top + dy });
+    });
+    const end = () => {
+      if (!start) return;
+      start = null;
+      btn.classList.remove('kb-dragging');
+      if (dragged) { saved = pos; try { GM_setValue(BTN_POS_KEY, pos); } catch (e) {} }
+    };
+    btn.addEventListener('pointerup', end);
+    btn.addEventListener('pointercancel', end);
+    // After a drag, swallow the click so it doesn't open the link.
+    btn.addEventListener('click', e => { if (dragged) { e.preventDefault(); dragged = false; } });
+    btn.addEventListener('dragstart', e => e.preventDefault()); // no native link-drag ghost
+
+    // On resize: keep a moved button on screen; keep the default one beside the white area.
+    window.addEventListener('resize', () => { pos = place(saved ? pos : defaultPos()); });
   }
 
   /* =====================================================================
@@ -1015,5 +1134,6 @@
   }).observe(document.body, { childList: true, subtree: true, characterData: true });
 
   setInterval(schedule, VEL_SAMPLE_MS); // keep sampling pools even when the page is quiet
+  initTracksideButton();
   update();
 })();
