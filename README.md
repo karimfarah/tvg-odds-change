@@ -41,7 +41,10 @@ Tracks the money flowing into the Win/Place/Show pools and the Probables (sample
 - Needs at least $100 of new pool money and $20 on a horse/combo before anything is flagged.
 
 ### 5. Estimated odds (Pools table)
-Under each Win/Place/Show amount: the estimated odds-to-1 from that horse's money and the pool total (~17% takeout assumed); hover for the $2 payout. Win is exact for the current pool; Place/Show depend on which other horses finish in the money, so they show the approximate low end (hover for the range). If a horse's Place or Show odds beat its Win odds, they're shown in a **green pill**.
+Under each Win/Place/Show amount: the estimated odds-to-1 from that horse's money and the pool total (~17% takeout assumed); hover for the $2 payout. Win is exact for the current pool; Place/Show depend on which other horses finish in the money, so they show the approximate low end (hover for the range). A **green pill** marks a safer bet that pays nearly as much as a riskier one on the same horse: Place, or Show, whose $2 payout is at least 70% of the Win (or Place) payout.
+
+### 6. Trackside button
+A green **📊 Trackside** button floats at the bottom, just right of TVG's white content area. Drag it anywhere (the position is remembered); click it to open [Trackside Handicapper](https://trackside.yourteamstats.com) in a new tab.
 
 ## Caching
 Trackside data is saved per country in Tampermonkey storage (shared by all TVG tabs), so badges appear instantly on reload. The script checks Trackside's small index at most every 30 minutes and only re-downloads the day file when it has been re-published or a new day starts.
