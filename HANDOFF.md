@@ -1,6 +1,6 @@
 # Handoff: TVG Odds + Trackside Userscript
 
-Status as of 2026-11-15 · script version **2.11** · single file: `tvg-odds-change.user.js`
+Status as of 2026-11-15 · script version **2.17** · single file: `tvg-odds-change.user.js`
 
 ## What it does
 A Tampermonkey userscript that runs on `https://www.tvg.com/*` race cards and adds:
@@ -12,6 +12,7 @@ A Tampermonkey userscript that runs on `https://www.tvg.com/*` race cards and ad
    - No Probables table → a "Top exactas by Trackside Win %" list is added inside the Probables box.
 
 4. **Money velocity** (see below): ⚡ badges on the race card, `+$X ×heat` tags in the Pools box, and `⚡▼drop% +$X` tags on Probables cells that are drawing money.
+5. **Fair odds** pill (deep green on an overlay), **estimated odds** under each Pools amount (green pill when a safer bet pays nearly as much), and a draggable **Trackside button**.
 
 ## Code layout (in file order)
 | Section | Key functions | Notes |
@@ -25,6 +26,8 @@ A Tampermonkey userscript that runs on `https://www.tvg.com/*` race cards and ad
 | Feature 3 | `winClass`, `exClass`, `tvgRunners`, `matchRace`, `updateRunners` | |
 | Feature 4 | `winProbs`, `exactaP`, `allExactas`, `probablesContainer`, `updateProbables`, `annotateProbablesTable`, `renderExactaList` | |
 | Feature 5 | `readPools`, `readProbables`, `velSample`, `velBase`, `poolHeat`, `heatClass`, `renderPoolVelocity`, `renderRunnerVelocity`, `renderProbablesVelocity`, `updateVelocity` | Money velocity. History in `GM_setValue('vel.v1')`. |
+| Feature 6 | `payout2`, `fmtOddsTo1`, `poolTotals`, `estimatePayouts`, `renderPoolPayouts` | Estimated odds in the Pools table and the green "nearly the same payout" pill (`PP_CLOSE`). |
+| Feature 7 | `initTracksideButton` | Draggable floating Trackside button. |
 | Main loop | `update`, `schedule` (300 ms throttle), `MutationObserver` | Ignores mutations from our own elements (class `kb-own`) to avoid loops. |
 
 All injected elements carry the class `kb-own`, and every class starts with `kb-`.
@@ -91,9 +94,12 @@ When the current TVG odds (`.race-current-odds`) are **higher** than fair (an ov
 - Net pool = pool total ("All" row, or the sum of the horses) × (1 − `WPS_TAKEOUT` 0.17).
 - Win: $2 × net ÷ money on the horse. Place: profit = (net − horse − the other placer) ÷ 2 ÷ horse. Show: same with 3 horses ÷ 3.
 - Place/Show show the approximate low end (no `~` prefix since v2.8), with the other spots filled by the most-backed horses. The hover shows the range (most- vs least-backed others).
-- If a horse's Place or Show odds (low end) are higher than its Win odds, that estimate becomes a green pill (`.kb-pp-better`).
+- **Green pill (`.kb-pp-better`):** a safer bet whose $2 payout (low end) is ≥ 70% (`PP_CLOSE`) of a riskier bet's payout on the same horse (Place vs Win, Show vs Place, Show vs Win). That covers "nearly the same money for less risk" and also when the safer bet pays more. Laurel R12 (2026-11-15) example: #6 Place $3.62 vs Win $4.02 (90%); #9 Show $3.34 vs Place $4.60 (73%); #3 Show $4.06 vs Place $4.34 (94%).
 - Rounded down to the cent (Churchill pays to the penny) with a $2.10 minimum. Scratched ($0) horses are skipped.
 - Checked on Churchill Downs R1, 2026-11-15, winner #5: est. Win $5.16 vs actual $5.12; Place ~$2.98 vs $2.90; Show ~$2.54 vs $2.46.
+
+## Floating Trackside button (v2.15)
+`initTracksideButton()` adds `#kb-ts-btn`, a fixed green "📊 Trackside" link (with a "click · drag to move" hint line since v2.17) that opens https://trackside.yourteamstats.com in a new tab. By default (v2.16) it sits at the bottom of the dark margin just right of TVG's white `.appcontent` area, or in the bottom-right corner if there's no margin. It follows the layout on resize until you move it. You drag it with pointer events (works with mouse and touch); a press that moves less than 5 px counts as a click, and the click after a drag is swallowed. The position is saved in `GM_setValue('tsButtonPos.v2')` as `{left, top}` px and kept on screen (re-clamped on resize).
 
 ## Color scales
 - Odds change: ≤−60 dark green, ≤−35 green, ≤−15 light green, <−0.5 pale green, ~0 grey, <+50 orange, ≥+50 red.
@@ -134,3 +140,9 @@ When the current TVG odds (`.race-current-odds`) are **higher** than fair (an ov
 - 2.9: green pill when Place/Show odds beat the horse's Win odds.
 - 2.10: velocity colors changed to lime / green / dark green, with a new very-hot tier (×3+).
 - 2.11: velocity colors switched to the script's existing greens (#a6e3b5 / #3fbf5f / #0b8a2f).
+- 2.12: green Place/Show pill when the payout is within 70% of a riskier bet (was: only when it beats Win).
+- 2.13: green pill shown on its own line under the pool amount (`display:table`, centered).
+- 2.14: Pools legend gets a second line explaining the green pill.
+- 2.15: draggable floating "Trackside" button.
+- 2.16: Trackside button defaults to the margin just right of TVG's white content area (bottom).
+- 2.17: Trackside button shows a second line, "click · drag to move".
