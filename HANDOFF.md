@@ -1,6 +1,6 @@
 # Handoff: TVG Odds + Trackside Userscript
 
-Status as of 2026-11-15 · script version **2.17** · single file: `tvg-odds-change.user.js`
+Status as of 2026-11-15 · script version **2.18** · single file: `tvg-odds-change.user.js`
 
 ## What it does
 A Tampermonkey userscript that runs on `https://www.tvg.com/*` race cards and adds:
@@ -146,3 +146,4 @@ When the current TVG odds (`.race-current-odds`) are **higher** than fair (an ov
 - 2.15: draggable floating "Trackside" button.
 - 2.16: Trackside button defaults to the margin just right of TVG's white content area (bottom).
 - 2.17: Trackside button shows a second line, "click · drag to move".
+- 2.18: `@license MIT` added (for Greasy Fork); renamed to "TVG Horse Racing M/L vs Current Odds % Change + Trackside Win %"; description says "horse racing cards".
