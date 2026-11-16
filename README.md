@@ -1,6 +1,8 @@
-# TVG M/L vs Current Odds % Change + Trackside Win %
+# TVG Horse Racing M/L vs Current Odds % Change + Trackside Win %
 
-Tampermonkey userscript for [tvg.com](https://www.tvg.com) race cards.
+Tampermonkey userscript for [tvg.com](https://www.tvg.com) horse racing cards.
+
+Current version: **2.18** · License: MIT
 
 ## What it shows
 
