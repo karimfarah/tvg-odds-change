@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         TVG M/L vs Current Odds % Change + Trackside Win %
+// @name         TVG Horse Racing M/L vs Current Odds % Change + Trackside Win %
 // @namespace    karim.tvg.odds
-// @version      2.17
+// @version      2.18
 // @license      MIT
-// @description  On TVG race cards: % change from M/L to current odds, Trackside Win % and fair odds per horse, Best Non-Maiden / Best Maiden / UK Top Pick / Hidden Gem tags (US + UK), exacta Win % on the Probables table, and money velocity (pools + probables)
+// @description  On TVG horse racing cards: % change from M/L to current odds, Trackside Win % and fair odds per horse, Best Non-Maiden / Best Maiden / UK Top Pick / Hidden Gem tags (US + UK), exacta Win % on the Probables table, and money velocity (pools + probables)
 // @match        https://www.tvg.com/*
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
